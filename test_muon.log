@@ -1,0 +1,66 @@
+Using the latest cached version of the dataset since openai/gsm8k couldn't be found on the Hugging Face Hub (offline mode is enabled).
+Found the latest cached dataset configuration 'main' at /scratch/gpfs/ARORA/xd7812/.cache/huggingface/datasets/openai___gsm8k/main/0.0.0/e53f048856ff4f594e959d75785d2c2d37b678ee (last modified on Tue Nov 18 03:46:43 2025).
+Warning: Flash Attention 3 not available, using standard attention
+================================================================================
+Training Llama with Muon optimizer - Single GPU
+================================================================================
+Python version: 3.13.9 | packaged by Anaconda, Inc. | (main, Oct 21 2025, 19:16:10) [GCC 11.2.0]
+PyTorch version: 2.9.1+cu130
+Triton version: 3.5.1
+Device: cuda
+================================================================================
+
+Loading dataset: openai/gsm8k
+Dataset type: gsm8k
+Map:   0%|          | 0/7473 [00:00<?, ? examples/s]Map:  13%|█▎        | 1000/7473 [00:00<00:02, 2244.51 examples/s]Map:  27%|██▋       | 2000/7473 [00:00<00:02, 2321.90 examples/s]Map:  40%|████      | 3000/7473 [00:01<00:01, 2370.01 examples/s]Map:  54%|█████▎    | 4000/7473 [00:01<00:01, 2387.64 examples/s]Map:  67%|██████▋   | 5000/7473 [00:02<00:01, 2357.87 examples/s]Map:  80%|████████  | 6000/7473 [00:02<00:00, 2358.86 examples/s]Map:  94%|█████████▎| 7000/7473 [00:02<00:00, 2358.67 examples/s]Map: 100%|██████████| 7473/7473 [00:03<00:00, 2342.10 examples/s]Map: 100%|██████████| 7473/7473 [00:03<00:00, 2341.45 examples/s]
+Map:   0%|          | 0/1319 [00:00<?, ? examples/s]Map:  76%|███████▌  | 1000/1319 [00:00<00:00, 2347.93 examples/s]Map: 100%|██████████| 1319/1319 [00:00<00:00, 2314.27 examples/s]Map: 100%|██████████| 1319/1319 [00:00<00:00, 2294.14 examples/s]
+`torch_dtype` is deprecated! Use `dtype` instead!
+  Limiting training to 64 samples
+✓ Dataset loaded
+  Train: 64 examples (2 batches)
+  Val: 1319 examples (42 batches)
+
+Loading model from ../checkpoints/adamw_130m_1
+Loaded model from ../checkpoints/adamw_130m_1
+✓ Model loaded: 265.6M parameters
+
+Parameter groups:
+  Muon: 134.2M params (224 tensors)
+  AdamW: 131.4M params (67 tensors)
+
+Learning rate schedule:
+  Warmup steps: 50
+  Total steps: 50
+  Cosine decay: True
+  Initial Muon LR: 0.002
+  Initial AdamW LR: 3e-05
+
+================================================================================
+Starting training
+================================================================================
+
+Epoch 1/3
+Traceback (most recent call last):
+  File "/scratch/gpfs/ARORA/xd7812/optimizers/modded-nanogpt/train_llama_muon_single_gpu.py", line 789, in <module>
+    main()
+    ~~~~^^
+  File "/scratch/gpfs/ARORA/xd7812/optimizers/modded-nanogpt/train_llama_muon_single_gpu.py", line 693, in main
+    loss, logits = model(input_ids=input_ids, labels=labels)
+                   ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/gpfs/ARORA/xd7812/.conda/envs/muon/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/scratch/gpfs/ARORA/xd7812/.conda/envs/muon/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/scratch/gpfs/ARORA/xd7812/optimizers/modded-nanogpt/llama_model.py", line 445, in forward
+    logits = self.lm_head(hidden_states)
+  File "/scratch/gpfs/ARORA/xd7812/.conda/envs/muon/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1775, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/scratch/gpfs/ARORA/xd7812/.conda/envs/muon/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1786, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/scratch/gpfs/ARORA/xd7812/.conda/envs/muon/lib/python3.13/site-packages/torch/nn/modules/linear.py", line 134, in forward
+    return F.linear(input, self.weight, self.bias)
+           ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 3.91 GiB. GPU 0 has a total capacity of 79.18 GiB of which 1.66 GiB is free. Process 1350999 has 50.26 GiB memory in use. Including non-PyTorch memory, this process has 27.25 GiB memory in use. Of the allocated memory 26.60 GiB is allocated by PyTorch, and 61.11 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+[W1118 21:41:19.191757711 AllocatorConfig.cpp:28] Warning: PYTORCH_CUDA_ALLOC_CONF is deprecated, use PYTORCH_ALLOC_CONF instead (function operator())

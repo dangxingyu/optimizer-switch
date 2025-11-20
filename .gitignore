@@ -3,3 +3,7 @@ pylog124M/
 __pycache__/
 logs/
 .DS_Store
+outputs/
+test_output/
+img/
+data/

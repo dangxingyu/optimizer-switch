@@ -1,0 +1,5 @@
+base_model,finetune_optimizer,best_lr,accuracy,correct,total
+adamw_300m_8,adamw,1e-4,0.0488,25,512
+adamw_300m_8,muon,5e-6,0.0236,12,509
+muon_300m_8,adamw,1e-4,0.1348,69,512
+muon_300m_8,muon,5e-6,0.0234,12,512
