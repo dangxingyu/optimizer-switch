@@ -1,12 +1,16 @@
 #!/bin/bash
-# Quick test of Muon single-GPU implementation on login node
+# Quick test of Moonlight Muon single-GPU implementation on login node
+# NOTE: Now using Moonlight's Muon implementation (Newton-Schulz 5 + standard momentum)
 
 cd /scratch/gpfs/ARORA/xd7812/optimizers/modded-nanogpt
 
-echo "Testing Muon single-GPU implementation..."
+echo "Testing Moonlight Muon single-GPU implementation..."
+echo "Implementation: Newton-Schulz 5 with standard SGD momentum + Nesterov"
 echo "Using 64 training samples, 50 max steps"
 echo ""
 
+# Note: Moonlight is more aggressive than NorMuon (~180x due to momentum + LR scaling)
+# Default LR is 0.002, but you may want to try smaller values like 0.0003 or 0.001
 python3 train_llama_muon_single_gpu.py \
   --checkpoint_path ../checkpoints/adamw_130m_1 \
   --max_train_samples 64 \

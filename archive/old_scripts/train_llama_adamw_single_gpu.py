@@ -1,8 +1,8 @@
 """
-Train Llama models with Muon optimizer - Single GPU version
-Simplified version for small datasets and models
+Train Llama models with AdamW optimizer - Single GPU version
+Baseline version for comparison with Muon optimizer
 
-Usage: python train_llama_muon_single_gpu.py
+Usage: python train_llama_adamw_single_gpu.py
 """
 
 import os
@@ -32,199 +32,6 @@ from llama_model import LlamaForCausalLM, LlamaConfig
 
 # Import QA data utilities
 from qa_data_utils import create_qa_dataloaders
-
-# ============================================================================
-# Muon Optimizer - Moonlight Implementation
-# Adapted from: https://github.com/KellerJordan/Muon/blob/master/muon.py
-# ============================================================================
-
-# Note: We use Moonlight's Newton-Schulz 5 iteration with @torch.compile
-# instead of the original modded-nanogpt Triton kernels and Polar Express.
-
-@torch.compile
-def zeropower_via_newtonschulz5(G, steps=5):
-    """
-    Newton-Schulz iteration to compute the zeroth power / orthogonalization of G.
-
-    Adapted from Moonshot's implementation:
-    https://github.com/KellerJordan/Muon/blob/master/muon.py
-
-    We use a quintic iteration whose coefficients are selected to maximize the slope at zero.
-    This produces something like US'V^T where S' is diagonal with S_{ii}' ~ Uniform(0.5, 1.5),
-    which doesn't hurt model performance relative to UV^T.
-    """
-    assert len(G.shape) == 2
-    a, b, c = (3.4445, -4.7750, 2.0315)
-    X = G.bfloat16()
-    if G.size(0) > G.size(1):
-        X = X.T
-
-    # Ensure spectral norm is at most 1
-    X = X / (X.norm() + 1e-7)
-
-    # Perform the NS iterations
-    for _ in range(steps):
-        A = X @ X.T
-        B = b * A + c * A @ A
-        X = a * X + B @ X
-
-    if G.size(0) > G.size(1):
-        X = X.T
-    return X
-
-
-class Muon(torch.optim.Optimizer):
-    """
-    Muon - MomentUm Orthogonalized by Newton-schulz
-
-    Adapted from Moonshot's implementation:
-    https://github.com/KellerJordan/Muon/blob/master/muon.py
-
-    Muon internally runs standard SGD-momentum, and then performs an orthogonalization
-    post-processing step, in which each 2D parameter's update is replaced with the nearest
-    orthogonal matrix. To efficiently orthogonalize each update, we use a Newton-Schulz
-    iteration, which has the advantage that it can be stably run in bfloat16 on the GPU.
-
-    Arguments:
-        lr: The learning rate (0.02 is a good default)
-        wd: Weight decay (0.1 is a good default)
-        muon_params: Parameters to be optimized by Muon (2D weight matrices)
-        momentum: Momentum used by internal SGD (0.95 is a good default)
-        nesterov: Whether to use Nesterov momentum (recommended)
-        ns_steps: Number of Newton-Schulz iterations (5 is default)
-        adamw_params: Parameters to be optimized by AdamW (1D params, embeddings)
-        adamw_betas: Betas for internal AdamW
-        adamw_eps: Epsilon for internal AdamW
-    """
-
-    def __init__(
-        self,
-        lr=1e-3,
-        wd=0.1,
-        muon_params=None,
-        momentum=0.95,
-        nesterov=True,
-        ns_steps=5,
-        adamw_params=None,
-        adamw_betas=(0.9, 0.95),
-        adamw_eps=1e-8,
-    ):
-        defaults = dict(
-            lr=lr,
-            wd=wd,
-            momentum=momentum,
-            nesterov=nesterov,
-            ns_steps=ns_steps,
-            adamw_betas=adamw_betas,
-            adamw_eps=adamw_eps,
-        )
-
-        params = list(muon_params) if muon_params else []
-        adamw_params = list(adamw_params) if adamw_params is not None else []
-        params.extend(adamw_params)
-        super().__init__(params, defaults)
-
-        # Mark which params use Muon vs AdamW
-        for p in (muon_params if muon_params else []):
-            assert p.ndim == 2, f"Muon params must be 2D, got {p.ndim}D"
-            self.state[p]["use_muon"] = True
-        for p in adamw_params:
-            self.state[p]["use_muon"] = False
-
-    def adjust_lr_for_muon(self, lr, param_shape):
-        """Adjust LR based on parameter shape (Moonshot formula)"""
-        A, B = param_shape[:2]
-        adjusted_ratio = 0.2 * torch.sqrt(torch.tensor(max(A, B), dtype=torch.float32)).item()
-        adjusted_lr = lr * adjusted_ratio
-        return adjusted_lr
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        """Perform a single optimization step."""
-        loss = None
-        if closure is not None:
-            with torch.enable_grad():
-                loss = closure()
-
-        for group in self.param_groups:
-
-            ############################
-            #           Muon           #
-            ############################
-
-            params = [p for p in group["params"] if self.state[p].get("use_muon", False)]
-            lr = group["lr"]
-            wd = group["wd"]
-            momentum = group["momentum"]
-
-            # Generate weight updates
-            for p in params:
-                g = p.grad
-                if g is None:
-                    continue
-                if g.ndim > 2:
-                    g = g.view(g.size(0), -1)
-                assert g.ndim == 2
-
-                # Calculate update
-                state = self.state[p]
-                if "momentum_buffer" not in state:
-                    state["momentum_buffer"] = torch.zeros_like(g)
-                buf = state["momentum_buffer"]
-                buf.mul_(momentum).add_(g)  # Standard SGD momentum
-
-                if group["nesterov"]:
-                    g = g.add(buf, alpha=momentum)  # Nesterov
-                else:
-                    g = buf  # Standard
-
-                # Orthogonalize
-                u = zeropower_via_newtonschulz5(g, steps=group["ns_steps"])
-
-                # Scale update (Moonshot LR scaling)
-                adjusted_lr = self.adjust_lr_for_muon(lr, p.shape)
-
-                # Apply weight decay
-                p.data.mul_(1 - lr * wd)
-
-                # Apply update
-                p.data.add_(u, alpha=-adjusted_lr)
-
-            ############################
-            #       AdamW backup       #
-            ############################
-
-            params = [p for p in group["params"] if not self.state[p].get("use_muon", False)]
-            lr = group['lr']
-            beta1, beta2 = group["adamw_betas"]
-            eps = group["adamw_eps"]
-            weight_decay = group["wd"]
-
-            for p in params:
-                g = p.grad
-                if g is None:
-                    continue
-                state = self.state[p]
-                if "step" not in state:
-                    state["step"] = 0
-                    state["moment1"] = torch.zeros_like(g)
-                    state["moment2"] = torch.zeros_like(g)
-                state["step"] += 1
-                step = state["step"]
-                buf1 = state["moment1"]
-                buf2 = state["moment2"]
-                buf1.lerp_(g, 1 - beta1)
-                buf2.lerp_(g.square(), 1 - beta2)
-
-                g = buf1 / (eps + buf2.sqrt())
-
-                bias_correction1 = 1 - beta1**step
-                bias_correction2 = 1 - beta2**step
-                scale = bias_correction1 / bias_correction2**0.5
-                p.data.mul_(1 - lr * weight_decay)
-                p.data.add_(g, alpha=-lr / scale)
-
-        return loss
 
 
 # ============================================================================
@@ -261,17 +68,12 @@ class TrainingConfig:
     max_seq_length: int = 512
     num_epochs: int = 3
     max_steps: int = -1  # -1 for full epochs
-    max_train_samples: int = -1  # -1 for all data, otherwise limit training samples
 
-    # Muon optimizer (for 2D weights)
-    muon_lr: float = 0.002  # Reduced from 0.02 for stability
-    muon_momentum: float = 0.95
-    muon_weight_decay: float = 0.0
-
-    # AdamW optimizer (for 1D params, embeddings)
-    adamw_lr: float = 3e-5  # Reduced from 1e-4 for stability
-    adamw_betas: tuple = (0.9, 0.98)
-    adamw_weight_decay: float = 0.01
+    # AdamW optimizer
+    adamw_lr: float = 3e-5
+    adamw_betas: tuple = (0.9, 0.95)
+    adamw_weight_decay: float = 0.00
+    adamw_eps: float = 1e-8
 
     # Gradient clipping
     max_grad_norm: float = 1.0
@@ -284,7 +86,7 @@ class TrainingConfig:
     log_interval: int = 1  # Log every step
     eval_interval: int = 50
     save_interval: int = 500
-    output_dir: str = "output"
+    output_dir: str = "output_adamw"
 
     # System
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -298,7 +100,6 @@ def main():
     parser.add_argument('--lr', type=float, default=None)
     parser.add_argument('--output_dir', type=str, default=None)
     parser.add_argument('--max_steps', type=int, default=None)
-    parser.add_argument('--max_train_samples', type=int, default=None)
     args = parser.parse_args()
 
     config = TrainingConfig()
@@ -307,22 +108,18 @@ def main():
     if args.checkpoint_path:
         config.checkpoint_path = args.checkpoint_path
     if args.lr:
-        config.muon_lr = args.lr
-        config.adamw_lr = args.lr / 10.0  # AdamW uses 1/10 of Muon LR
+        config.adamw_lr = args.lr
     if args.output_dir:
         config.output_dir = args.output_dir
     if args.max_steps:
         config.max_steps = args.max_steps
-    if args.max_train_samples:
-        config.max_train_samples = args.max_train_samples
 
     print("=" * 80)
-    print(f"Training Llama with Moonlight Muon optimizer - Single GPU")
+    print(f"Training Llama with AdamW optimizer - Single GPU")
     print("=" * 80)
     print(f"Python version: {sys.version}")
     print(f"PyTorch version: {torch.__version__}")
     print(f"Device: {config.device}")
-    print(f"Optimizer: Moonlight Muon (Newton-Schulz 5 + standard momentum)")
     print("=" * 80)
 
     # Create output directory
@@ -406,11 +203,6 @@ def main():
     else:
         tokenized_val = tokenized_train.select(range(min(500, len(tokenized_train))))
 
-    # Limit training samples if specified
-    if config.max_train_samples > 0 and config.max_train_samples < len(tokenized_train):
-        tokenized_train = tokenized_train.select(range(config.max_train_samples))
-        print(f"  Limiting training to {config.max_train_samples} samples")
-
     tokenized_train.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
     tokenized_val.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
 
@@ -450,53 +242,37 @@ def main():
     print(f"✓ Model loaded: {total_params / 1e6:.1f}M parameters")
 
     # ========================================================================
-    # Setup optimizers
+    # Setup optimizer
     # ========================================================================
 
-    # Separate parameters for Muon (2D) and AdamW (1D, embeddings)
-    muon_params = []
-    adamw_params = []
-
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue
-
-        if param.ndim >= 2 and 'weight' in name:
-            if 'embed' not in name.lower() and 'lm_head' not in name.lower():
-                muon_params.append(param)
-            else:
-                adamw_params.append(param)
-        else:
-            adamw_params.append(param)
-
-    print(f"\nParameter groups:")
-    print(f"  Muon: {sum(p.numel() for p in muon_params) / 1e6:.1f}M params ({len(muon_params)} tensors)")
-    print(f"  AdamW: {sum(p.numel() for p in adamw_params) / 1e6:.1f}M params ({len(adamw_params)} tensors)")
-
-    # Moonlight combined optimizer (handles both Muon and AdamW)
-    optimizer = Muon(
-        lr=config.muon_lr,
-        wd=config.muon_weight_decay,
-        muon_params=muon_params,
-        momentum=config.muon_momentum,
-        nesterov=True,  # Use Nesterov momentum (recommended)
-        ns_steps=5,  # Newton-Schulz iterations
-        adamw_params=adamw_params,
-        adamw_betas=config.adamw_betas,
-        adamw_eps=1e-8,
+    # Use AdamW for all parameters
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.adamw_lr,
+        betas=config.adamw_betas,
+        eps=config.adamw_eps,
+        weight_decay=config.adamw_weight_decay,
     )
 
+    print(f"\nOptimizer: AdamW")
+    print(f"  Learning rate: {config.adamw_lr}")
+    print(f"  Betas: {config.adamw_betas}")
+    print(f"  Weight decay: {config.adamw_weight_decay}")
+    print(f"  Epsilon: {config.adamw_eps}")
+
     # ========================================================================
-    # Learning rate schedulers
+    # Learning rate scheduler
     # ========================================================================
 
     # Calculate total training steps
-    total_steps = len(train_loader) * config.num_epochs
+    steps_per_epoch = len(train_loader) // config.gradient_accumulation_steps
     if config.max_steps > 0:
         total_steps = config.max_steps
+    else:
+        total_steps = steps_per_epoch * config.num_epochs
 
     def get_lr_multiplier(step):
-        """Get learning rate multiplier for warmup + cosine decay."""
+        """Get LR multiplier for warmup + cosine decay schedule."""
         if step < config.warmup_steps:
             # Linear warmup
             return step / config.warmup_steps
@@ -512,8 +288,7 @@ def main():
     print(f"  Warmup steps: {config.warmup_steps}")
     print(f"  Total steps: {total_steps}")
     print(f"  Cosine decay: {config.use_cosine_schedule}")
-    print(f"  Initial Muon LR: {config.muon_lr}")
-    print(f"  Initial AdamW LR: {config.adamw_lr}")
+    print(f"  Initial LR: {config.adamw_lr}")
 
     # ========================================================================
     # Training loop
@@ -560,10 +335,10 @@ def main():
                 optimizer.zero_grad()
                 global_step += 1
 
-                # Update learning rates with schedule
+                # Update learning rate with schedule
                 lr_mult = get_lr_multiplier(global_step)
                 for param_group in optimizer.param_groups:
-                    param_group['lr'] = config.muon_lr * lr_mult
+                    param_group['lr'] = config.adamw_lr * lr_mult
 
                 # Logging
                 if global_step % config.log_interval == 0:

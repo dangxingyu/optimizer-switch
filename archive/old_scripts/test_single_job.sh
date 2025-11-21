@@ -1,12 +1,20 @@
 #!/bin/bash
 # Test a single job configuration before running the full sweep
-# This will test: muon_300m_8 base model + muon finetune + lr=1e-5
+# This will test: muon_300m_8 base model + Moonlight Muon finetune
+#
+# NOTE: Now using Moonlight's Muon implementation:
+#   - Newton-Schulz 5 (simpler than Polar Express)
+#   - Standard SGD momentum + Nesterov (20x more aggressive than lerp)
+#   - Moonlight LR scaling: 0.2*sqrt(max(d_out,d_in)) (~9x larger for typical layers)
+#   - Combined: ~180x more aggressive than previous NorMuon
+#
+# RECOMMENDED: Start with smaller LR than NorMuon (try 1e-4, 3e-4, 1e-3)
 
 set -e
 
 BASE_MODEL="muon_300m_8"
-FINETUNE_OPT="muon"
-LR="1e-5"
+FINETUNE_OPT="moonlight_muon"
+LR="1e-4"  # Updated: Moonlight is more aggressive, use smaller LR
 SCRIPT="train_llama_muon_single_gpu.py"
 
 CHECKPOINT_PATH="../checkpoints/${BASE_MODEL}"
